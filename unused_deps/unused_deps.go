@@ -45,6 +45,7 @@ var (
 	buildScmRevision = "redacted"
 
 	version             = flag.Bool("version", false, "Print the version of unused_deps")
+	workspace           = flag.String("workspace", "", "the absolute path of the workspace")
 	buildTool           = flag.String("build_tool", config.DefaultBuildTool, config.BuildToolHelp)
 	extraActionFileName = flag.String("extra_action_file", "", config.ExtraActionFileNameHelp)
 	outputFileName      = flag.String("output_file", "", "used only with extra_action_file")
@@ -120,15 +121,18 @@ func writeUnusedDeps(jarPath, outputFileName string) {
 	}
 }
 
-func cmdWithStderr(name string, arg ...string) *exec.Cmd {
+func cmdWithStderr(name string, dir string, arg ...string) *exec.Cmd {
 	cmd := exec.Command(name, arg...)
+	if len(dir) != 0 {
+		cmd.Dir = dir
+	}
 	cmd.Stderr = os.Stderr
 	return cmd
 }
 
 // blazeInfo retrieves the blaze info value for a given key.
 func blazeInfo(key string) (value string) {
-	out, err := cmdWithStderr(*buildTool, "info", key).Output()
+	out, err := cmdWithStderr(*buildTool, *workspace, "info", key).Output()
 	if err != nil {
 		log.Printf("'%s info %s' failed: %s", *buildTool, key, err)
 	}
@@ -261,8 +265,8 @@ func hasRuntimeComment(expr build.Expr) bool {
 // printCommands prints, for each key in the deps map, a buildozer command
 // to remove that entry from the deps attribute of the rule identified by label.
 // Returns true if at least one command was printed, or false otherwise.
-func printCommands(label string, deps map[string]bool) (anyCommandPrinted bool) {
-	buildFileName, pkg, ruleName := edit.InterpretLabel(label)
+func printCommands(label string, deps map[string]bool, workspace string) (anyCommandPrinted bool) {
+	buildFileName, pkg, ruleName := edit.InterpretLabelForWorkspaceLocation(workspace, label)
 	depsExpr := getDepsExpr(buildFileName, ruleName)
 	for _, li := range edit.AllLists(depsExpr) {
 		for _, elem := range li.List {
@@ -326,6 +330,7 @@ func main() {
 		writeUnusedDeps(jarPath, *outputFileName)
 		return
 	}
+
 	targetPatterns := flag.Args()
 	if len(targetPatterns) == 0 {
 		targetPatterns = []string{"//..."}
@@ -335,7 +340,7 @@ func main() {
 		queryCmd, fmt.Sprintf("kind('(java|android)_*', %s)", strings.Join(targetPatterns, " + ")))
 
 	log.Printf("running: %s %s", *buildTool, strings.Join(queryCmd, " "))
-	queryOut, err := cmdWithStderr(*buildTool, queryCmd...).Output()
+	queryOut, err := cmdWithStderr(*buildTool, *workspace, queryCmd...).Output()
 	if err != nil {
 		log.Print(err)
 	}
@@ -364,7 +369,7 @@ func main() {
 	blazeArgs := append(buildCmd, targetPatterns...)
 
 	log.Printf("running: %s %s", *buildTool, strings.Join(blazeArgs, " "))
-	cmdWithStderr(*buildTool, blazeArgs...).Run()
+	cmdWithStderr(*buildTool, *workspace, blazeArgs...).Run()
 	blazeBin := blazeInfo(config.DefaultBinDir)
 	blazeOutputPath := blazeInfo(config.DefaultOutputPath)
 	fmt.Fprintf(os.Stderr, "\n") // vertical space between build output and unused_deps output
@@ -375,7 +380,7 @@ func main() {
 		depsByJar := directDepParams(blazeOutputPath, inputFileName(blazeBin, pkg, ruleName, "javac_params"))
 		depsToRemove := unusedDeps(inputFileName(blazeBin, pkg, ruleName, "jdeps"), depsByJar)
 		// TODO(bazel-team): instead of printing, have buildifier-like modes?
-		anyCommandPrinted = printCommands(label, depsToRemove) || anyCommandPrinted
+		anyCommandPrinted = printCommands(label, depsToRemove, *workspace) || anyCommandPrinted
 	}
 	if !anyCommandPrinted {
 		fmt.Fprintln(os.Stderr, "No unused deps found.")
